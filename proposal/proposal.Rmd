@@ -1,0 +1,100 @@
+---
+title: "Project Proposal: What Makes a Bird Strike Damaging?"
+author: "Leul Enquanhone"
+date: "November 14, 2026"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.width = 6, fig.height = 3.2, fig.align = "center", out.width = "80%"
+)
+library(tidyverse)
+```
+
+```{r load-data}
+wildlife <- read_rds("../data/wildlife_clean.rds")
+```
+
+## Section 1 - Introduction
+
+When a commercial jet hits a bird, most of the time nothing happens to the plane. Sometimes, though, the strike damages an engine, a windshield, or a wing. The general question for this project is: **what makes a bird strike more likely to damage the aircraft?** In particular, I want to know whether it matters more how *high* the plane is or how *fast* it is going when the strike happens. My guess is that speed matters more, since the energy of an impact grows with the square of speed, and planes that are higher up are usually also flying faster.
+
+The data come from the FAA Wildlife Strike Database. Pilots, airlines, and airports report wildlife strikes to the FAA, and the reports are mostly voluntary. I am using the version that was shared through TidyTuesday (July 23, 2019), which only includes strikes for the four largest US airlines (American, Delta, Southwest, and United) from 1990 to 2018.
+
+Each case is one reported strike. The original file has 56,978 cases and 21 variables. I dropped two ID columns (`airport_id` and `species_id`) because they repeat the airport and species names, which leaves 19 variables. These include categorical variables (airline, aircraft type, species, damage level, phase of flight, time of day, sky and precipitation), discrete numerical variables (number of engines, incident month and year), and continuous numerical variables (height and speed at impact, and inflation-adjusted repair cost).
+
+## Section 2 - Data
+
+The raw data are in `data/wildlife_impacts.csv`. The script `R/clean-data.R` removes the `r 56978 - nrow(wildlife)` strikes with no damage information and adds a few new variables:
+
+- `damaged`: "Yes" if the damage level was minor, uncertain, or substantial, and "No" if there was no damage
+- `phase`: phase of flight with the inconsistent capitalization fixed (for example "APPROACH" and "Approach"), keeping the five main phases
+- `height_bin`: height at impact grouped into five bins
+- `bird_size`: small, medium, or large, taken from species labels like "Unknown bird - small"
+
+```{r glimpse}
+glimpse(wildlife, width = 85)
+```
+
+## Section 3 - Data analysis plan
+
+**Variables.** The response variable is `damaged` (Yes/No). The main explanatory variables are `speed` (knots) and `height` (feet). I will also look at `phase`, `time_of_day`, and `bird_size`.
+
+**Preliminary exploration.** Overall, about `r round(100 * mean(wildlife$damaged == "Yes"), 1)`% of strikes caused damage.
+
+```{r damage-overall}
+wildlife %>%
+  count(damaged) %>%
+  mutate(prop = n / sum(n))
+```
+
+A lot of the height and speed values are missing, so any model with both of them will only use part of the data.
+
+```{r missing}
+wildlife %>%
+  summarise(
+    height_missing = mean(is.na(height)),
+    speed_missing = mean(is.na(speed)),
+    phase_missing = mean(is.na(phase))
+  )
+```
+
+Strikes that happen higher up are more likely to cause damage:
+
+```{r height-plot}
+wildlife %>%
+  filter(!is.na(height_bin)) %>%
+  group_by(height_bin) %>%
+  summarise(rate = mean(damaged == "Yes")) %>%
+  ggplot(aes(x = height_bin, y = rate)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Damage rate by height at impact",
+    x = "Height at impact", y = "Strikes with damage"
+  )
+```
+
+But height and speed go together. Planes on the ground (take-off run and landing roll) are slower, and planes in descent are both very high and very fast:
+
+```{r phase-height-speed}
+wildlife %>%
+  filter(!is.na(phase), !is.na(height), !is.na(speed)) %>%
+  group_by(phase) %>%
+  summarise(
+    n = n(),
+    median_height = median(height),
+    median_speed = median(speed),
+    damage_rate = mean(damaged == "Yes")
+  )
+```
+
+So the height plot above could really be showing a speed effect. This is the main thing I want to untangle.
+
+**Methods.** First I will compare damage rates across groups with summary tables and bar plots (by height bin, speed range, phase of flight, and bird size). Then I will fit a logistic regression with `damaged` as the response and `height` and `speed` as predictors, and later add `time_of_day`. I will report the results as odds ratios with confidence intervals.
+
+**What would support my hypothesis.** If speed matters more than height, then in the model with both predictors the odds ratio for speed should be above 1 with a confidence interval that does not include 1, while the odds ratio for height should be close to 1 once speed is accounted for.
+
+**Data quality.** Reporting is voluntary and changed a lot over time. The number of reports per year went up from a few hundred in the early 1990s to almost 4,000 in 2018, while the share of strikes with damage went down. This probably means that more minor strikes were being reported later on, not that strikes became less dangerous. I will keep this in mind when interpreting the results.
