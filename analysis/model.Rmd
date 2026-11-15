@@ -1,0 +1,117 @@
+---
+title: "Logistic Regression: Height vs. Speed"
+author: "Leul Enquanhone"
+date: "November 14, 2026"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(broom)
+```
+
+```{r load-data}
+wildlife <- read_rds("../data/wildlife_clean.rds")
+
+model_data <- wildlife %>%
+  filter(!is.na(height), !is.na(speed)) %>%
+  mutate(
+    height_1000 = height / 1000,
+    speed_10 = speed / 10
+  )
+
+nrow(model_data)
+```
+
+I only use strikes where both height and speed are recorded, so all the models below are fit on the same `r nrow(model_data)` strikes. Height is in thousands of feet and speed is in tens of knots, so the odds ratios are easier to read.
+
+## Model 1: height only
+
+```{r model-height}
+m_height <- glm(damaged ~ height_1000, data = model_data, family = "binomial")
+
+tidy(m_height, exponentiate = TRUE, conf.int = TRUE)
+```
+
+## Model 2: speed only
+
+```{r model-speed}
+m_speed <- glm(damaged ~ speed_10, data = model_data, family = "binomial")
+
+tidy(m_speed, exponentiate = TRUE, conf.int = TRUE)
+```
+
+## Model 3: height and speed
+
+```{r model-both}
+m_both <- glm(damaged ~ height_1000 + speed_10, data = model_data, family = "binomial")
+
+m_both_tidy <- tidy(m_both, exponentiate = TRUE, conf.int = TRUE)
+m_both_tidy
+```
+
+```{r both-values, include = FALSE}
+or_height <- m_both_tidy %>% filter(term == "height_1000")
+or_speed <- m_both_tidy %>% filter(term == "speed_10")
+```
+
+Holding height constant, each extra 10 knots of speed multiplies the odds of damage by about `r round(or_speed$estimate, 2)` (95% CI `r round(or_speed$conf.low, 2)` to `r round(or_speed$conf.high, 2)`). Holding speed constant, each extra 1,000 feet of height multiplies the odds by about `r round(or_height$estimate, 2)` (95% CI `r round(or_height$conf.low, 2)` to `r round(or_height$conf.high, 2)`, p = `r signif(or_height$p.value, 2)`).
+
+## Model 4: adding time of day
+
+```{r model-time}
+m_time <- glm(
+  damaged ~ height_1000 + speed_10 + time_of_day,
+  data = model_data, family = "binomial"
+)
+
+tidy(m_time, exponentiate = TRUE, conf.int = TRUE)
+```
+
+The reference level for `time_of_day` is Dawn. This model drops strikes with no time of day recorded, so it uses `r nobs(m_time)` strikes instead of `r nobs(m_both)`.
+
+## Comparing the models
+
+```{r compare}
+tibble(
+  model = c("Height only", "Speed only", "Height + speed", "Height + speed + time of day"),
+  n = c(nobs(m_height), nobs(m_speed), nobs(m_both), nobs(m_time)),
+  AIC = c(AIC(m_height), AIC(m_speed), AIC(m_both), AIC(m_time))
+)
+```
+
+AIC can only be compared between the first three models, since the fourth one is fit on fewer strikes.
+
+## Predicted probabilities
+
+```{r predictions, fig.width = 6, fig.height = 3.2, fig.align = "center", out.width = "80%"}
+new_data <- expand_grid(
+  speed_10 = seq(10, 30, by = 1),
+  height_1000 = c(0, 1, 5)
+)
+
+augment(m_both, newdata = new_data, type.predict = "response") %>%
+  mutate(height = paste(height_1000 * 1000, "ft")) %>%
+  ggplot(aes(x = speed_10 * 10, y = .fitted, color = height)) +
+  geom_line() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Predicted chance of damage rises with speed",
+    x = "Speed at impact (knots)", y = "Predicted probability of damage",
+    color = "Height"
+  )
+```
+
+## Interpretation
+
+On its own, height looks like it matters. But once speed is in the model, the odds ratio for height is close to 1 and its confidence interval includes 1, while speed is still clearly above 1. This supports the idea that the height pattern in the EDA was mostly a speed effect, since planes that are higher up are usually flying faster. Night strikes had lower odds of damage than dawn strikes, but time of day was missing for many strikes, so I would not put too much weight on that.
+
+These are associations, not causes. Reporting is voluntary, and about half of the strikes are missing height or speed. The strikes with missing values had a slightly different damage rate than the ones in the model, so the model data may not fully represent all strikes:
+
+```{r missing-check}
+wildlife %>%
+  mutate(in_model = !is.na(height) & !is.na(speed)) %>%
+  group_by(in_model) %>%
+  summarise(n = n(), rate = mean(damaged == "Yes"))
+```
