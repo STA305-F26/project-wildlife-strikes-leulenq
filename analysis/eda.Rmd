@@ -1,0 +1,139 @@
+---
+title: "Exploratory Data Analysis: Wildlife Strikes"
+author: "Leul Enquanhone"
+date: "November 14, 2026"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.width = 6, fig.height = 3.2, fig.align = "center", out.width = "80%"
+)
+library(tidyverse)
+```
+
+```{r load-data}
+wildlife <- read_rds("../data/wildlife_clean.rds")
+```
+
+## Damage rate by phase of flight
+
+```{r phase}
+phase_rates <- wildlife %>%
+  filter(!is.na(phase)) %>%
+  group_by(phase) %>%
+  summarise(n = n(), rate = mean(damaged == "Yes"))
+
+phase_rates
+
+ggplot(phase_rates, aes(x = phase, y = rate)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Climb and descent have the highest damage rates",
+    x = "Phase of flight", y = "Strikes with damage"
+  )
+```
+
+## Damage rate by height at impact
+
+```{r height}
+height_rates <- wildlife %>%
+  filter(!is.na(height_bin)) %>%
+  group_by(height_bin) %>%
+  summarise(n = n(), rate = mean(damaged == "Yes"))
+
+height_rates
+
+ggplot(height_rates, aes(x = height_bin, y = rate)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Strikes higher up are more likely to cause damage",
+    x = "Height at impact", y = "Strikes with damage"
+  )
+```
+
+## Damage rate by speed at impact
+
+```{r speed}
+speed_rates <- wildlife %>%
+  filter(!is.na(speed)) %>%
+  mutate(speed_bin = cut(
+    speed,
+    breaks = c(-Inf, 120, 140, 160, 200, Inf),
+    labels = c("120 or less", "121-140", "141-160", "161-200", "Over 200")
+  )) %>%
+  group_by(speed_bin) %>%
+  summarise(n = n(), rate = mean(damaged == "Yes"))
+
+speed_rates
+
+ggplot(speed_rates, aes(x = speed_bin, y = rate)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Faster strikes are more likely to cause damage",
+    x = "Speed at impact (knots)", y = "Strikes with damage"
+  )
+```
+
+## Height and speed together
+
+```{r height-speed}
+wildlife %>%
+  filter(!is.na(height), !is.na(speed)) %>%
+  ggplot(aes(x = speed, y = height, color = damaged)) +
+  geom_jitter(alpha = 0.3, size = 0.6) +
+  scale_color_manual(values = c("No" = "gray70", "Yes" = "firebrick")) +
+  labs(
+    title = "Planes that are higher up are also flying faster",
+    x = "Speed at impact (knots)", y = "Height at impact (feet)",
+    color = "Damaged"
+  )
+
+wildlife %>%
+  filter(!is.na(height), !is.na(speed)) %>%
+  summarise(correlation = cor(height, speed))
+```
+
+## Bird size
+
+```{r bird-size}
+size_rates <- wildlife %>%
+  filter(!is.na(bird_size)) %>%
+  group_by(bird_size) %>%
+  summarise(n = n(), rate = mean(damaged == "Yes"))
+
+size_rates
+
+ggplot(size_rates, aes(x = bird_size, y = rate)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Large birds are much more likely to cause damage",
+    subtitle = "Only strikes where the bird was recorded as unknown small, medium, or large",
+    x = "Bird size", y = "Strikes with damage"
+  )
+```
+
+## Reporting over time
+
+```{r years, fig.height = 4.5}
+year_summary <- wildlife %>%
+  group_by(incident_year) %>%
+  summarise(reports = n(), rate = mean(damaged == "Yes"))
+
+year_summary %>%
+  pivot_longer(c(reports, rate), names_to = "measure", values_to = "value") %>%
+  mutate(measure = if_else(measure == "reports", "Number of reports", "Share with damage")) %>%
+  ggplot(aes(x = incident_year, y = value)) +
+  geom_line(color = "steelblue") +
+  geom_point(color = "steelblue", size = 1) +
+  facet_wrap(~ measure, ncol = 1, scales = "free_y") +
+  labs(
+    title = "More reports over time, but a smaller share with damage",
+    x = "Year", y = NULL
+  )
+```
