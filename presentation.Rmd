@@ -1,0 +1,204 @@
+---
+title: "What Makes a Bird Strike Damaging?"
+subtitle: "Height vs. speed in FAA wildlife strike reports"
+author: "Leul Enquanhone"
+date: "STA 305 | November 16, 2026"
+output:
+  beamer_presentation:
+    theme: "default"
+    colortheme: "dolphin"
+    fonttheme: "default"
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE, message = FALSE, warning = FALSE,
+  fig.width = 7.5, fig.height = 3.9, fig.align = "center", out.width = "90%"
+)
+library(tidyverse)
+library(broom)
+
+wildlife <- read_rds("data/wildlife_clean.rds")
+
+model_data <- wildlife %>%
+  filter(!is.na(height), !is.na(speed)) %>%
+  mutate(height_1000 = height / 1000, speed_10 = speed / 10)
+
+m_height <- glm(damaged ~ height_1000, data = model_data, family = "binomial")
+m_both <- glm(damaged ~ height_1000 + speed_10, data = model_data, family = "binomial")
+
+or_height_alone <- tidy(m_height, exponentiate = TRUE, conf.int = TRUE) %>%
+  filter(term == "height_1000")
+or_both <- tidy(m_both, exponentiate = TRUE, conf.int = TRUE)
+or_h <- or_both %>% filter(term == "height_1000")
+or_s <- or_both %>% filter(term == "speed_10")
+```
+
+## The data
+
+- Source: FAA Wildlife Strike Database, shared through TidyTuesday (July 2019)
+- Strikes reported by pilots, airlines, and airports, mostly voluntary
+- Only the 4 biggest US airlines (American, Delta, Southwest, United), 1990-2018
+- One row = one reported strike
+- 56,978 strikes, 19 variables after dropping 2 ID columns
+- Key variables: damage level, height and speed at impact, phase of flight, time of day, species
+
+Why this dataset: I am interested in aviation safety, and bird strikes are one of the most common risks to aircraft.
+
+## Initial questions
+
+- When a plane hits a bird, what decides whether the plane gets damaged?
+- Does it matter how high the plane is?
+- Does it matter which phase of flight it is in (take-off, climb, approach, ...)?
+
+My guess going in: strikes higher up are worse, because planes are flying faster and birds up there may be bigger.
+
+## Data preparation
+
+- Removed `r 56978 - nrow(wildlife)` strikes with no damage information, leaving `r format(nrow(wildlife), big.mark = ",")`
+- Damaged = Yes if damage was minor, uncertain, or substantial; No if none
+- Phase of flight had inconsistent labels ("APPROACH", "Approach", "approach"), so I fixed the capitalization and kept the 5 main phases
+- Grouped height into 5 bins for plots
+- Bird size from labels like "Unknown bird - small"
+- Height is missing for `r round(100 * mean(is.na(wildlife$height)))`% and speed for `r round(100 * mean(is.na(wildlife$speed)))`% of strikes, so the model only uses strikes with both (`r format(nrow(model_data), big.mark = ",")`)
+
+## Damage is rare: about `r round(100 * mean(wildlife$damaged == "Yes"), 1)`% of strikes
+
+```{r phase-plot}
+wildlife %>%
+  filter(!is.na(phase)) %>%
+  group_by(phase) %>%
+  summarise(rate = mean(damaged == "Yes")) %>%
+  ggplot(aes(x = phase, y = rate)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Climb and descent have the highest damage rates",
+    x = "Phase of flight", y = "Strikes with damage"
+  )
+```
+
+## Higher strikes look worse...
+
+```{r height-plot}
+wildlife %>%
+  filter(!is.na(height_bin)) %>%
+  group_by(height_bin) %>%
+  summarise(rate = mean(damaged == "Yes")) %>%
+  ggplot(aes(x = height_bin, y = rate)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Damage rate by height at impact",
+    x = "Height at impact", y = "Strikes with damage"
+  )
+```
+
+## ...but height and speed go together
+
+```{r phase-table}
+wildlife %>%
+  filter(!is.na(phase), !is.na(height), !is.na(speed)) %>%
+  group_by(phase) %>%
+  summarise(
+    `Height (ft)` = median(height),
+    `Speed (kts)` = median(speed),
+    Damaged = scales::percent(mean(damaged == "Yes"), accuracy = 0.1)
+  ) %>%
+  rename(Phase = phase) %>%
+  knitr::kable()
+```
+
+\vspace{0.4cm}
+
+Planes that are higher up are also flying faster. So the height pattern could really be a speed effect.
+
+Refined question: Is a strike more dangerous because the plane is high, or because it is fast?
+
+## Main analysis: logistic regression
+
+Response: damaged (Yes/No). Height per 1,000 ft, speed per 10 knots.
+
+```{r model-table}
+bind_rows(
+  or_height_alone %>% mutate(model = "Height only"),
+  or_both %>% filter(term != "(Intercept)") %>% mutate(model = "Height + speed")
+) %>%
+  mutate(
+    term = recode(term, height_1000 = "Height", speed_10 = "Speed"),
+    `Odds ratio` = sprintf("%.2f", estimate),
+    `95% CI` = paste0(sprintf("%.2f", conf.low), "-", sprintf("%.2f", conf.high)),
+    `p-value` = if_else(p.value < 0.001, "< 0.001", sprintf("%.2f", p.value))
+  ) %>%
+  select(Model = model, Term = term, `Odds ratio`, `95% CI`, `p-value`) %>%
+  knitr::kable()
+```
+
+\vspace{0.3cm}
+
+- Once speed is in the model, height no longer matters (odds ratio `r round(or_h$estimate, 2)`)
+- Each extra 10 knots multiplies the odds of damage by about `r round(or_s$estimate, 2)`
+
+## Predicted chance of damage
+
+```{r predict-plot}
+expand_grid(speed_10 = seq(10, 30, by = 1), height_1000 = c(0, 1, 5)) %>%
+  augment(m_both, newdata = ., type.predict = "response") %>%
+  mutate(height = factor(paste(height_1000 * 1000, "ft"), levels = c("0 ft", "1000 ft", "5000 ft"))) %>%
+  ggplot(aes(x = speed_10 * 10, y = .fitted, color = height)) +
+  geom_line(linewidth = 1) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "At the same speed, height barely changes the risk",
+    x = "Speed at impact (knots)", y = "Predicted chance of damage",
+    color = "Height"
+  )
+```
+
+## Bird size matters a lot
+
+```{r size-plot}
+wildlife %>%
+  filter(!is.na(bird_size)) %>%
+  group_by(bird_size) %>%
+  summarise(rate = mean(damaged == "Yes")) %>%
+  ggplot(aes(x = bird_size, y = rate)) +
+  geom_col(fill = "steelblue") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Large birds cause damage far more often",
+    subtitle = "Strikes recorded as unknown small, medium, or large bird",
+    x = "Bird size", y = "Strikes with damage"
+  )
+```
+
+## Limitations: reporting changed over time
+
+```{r year-plot, fig.height = 3}
+wildlife %>%
+  group_by(incident_year) %>%
+  summarise(reports = n(), rate = mean(damaged == "Yes")) %>%
+  pivot_longer(c(reports, rate), names_to = "measure", values_to = "value") %>%
+  mutate(measure = if_else(measure == "reports", "Number of reports", "Share with damage")) %>%
+  ggplot(aes(x = incident_year, y = value)) +
+  geom_line(color = "steelblue") +
+  facet_wrap(~ measure, ncol = 2, scales = "free_y") +
+  labs(x = "Year", y = NULL)
+```
+
+- More reports but a lower damage rate: probably more minor strikes were reported later, not safer planes
+- About half the strikes are missing height or speed
+- Results are associations, not causes
+
+## Conclusion
+
+- About `r round(100 * mean(wildlife$damaged == "Yes"), 1)`% of reported strikes damaged the aircraft
+- Strikes higher up look more damaging, but that is mostly because planes up there are faster
+- After accounting for speed, height does not matter; speed does
+- Bird size is the other big factor: large birds cause damage about `r wildlife %>% filter(!is.na(bird_size)) %>% group_by(bird_size) %>% summarise(rate = mean(damaged == "Yes")) %>% summarise(round(max(rate) / min(rate))) %>% pull()` times as often as small birds
+
+Next step: add bird size to the model, using strikes where the bird size was recorded.
+
+## Thank you
+
+Questions?
